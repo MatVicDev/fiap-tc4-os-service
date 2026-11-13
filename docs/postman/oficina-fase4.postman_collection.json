@@ -1,0 +1,589 @@
+{
+  "info": {
+    "name": "Oficina — Fase 4 (microsserviços + Saga)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Fluxo completo da OS passando por os-service, execution-service e billing-service. Execute as pastas em ordem; aguarde ~1s entre etapas assíncronas."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "os_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "billing_url",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "execution_url",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "admin_user",
+      "value": "admin"
+    },
+    {
+      "key": "admin_password",
+      "value": "admin123"
+    },
+    {
+      "key": "cpf",
+      "value": "52998224725"
+    },
+    {
+      "key": "placa",
+      "value": "BRA2E19"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "osId",
+      "value": ""
+    },
+    {
+      "key": "orcamentoId",
+      "value": ""
+    },
+    {
+      "key": "pagamentoId",
+      "value": ""
+    },
+    {
+      "key": "servicoId",
+      "value": ""
+    },
+    {
+      "key": "insumoId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Autenticação",
+      "item": [
+        {
+          "name": "Login funcionário",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario\": \"{{admin_user}}\",\n  \"senha\": \"{{admin_password}}\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('token', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Cadastros",
+      "item": [
+        {
+          "name": "Cadastrar cliente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/clientes",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Maria Souza\",\n  \"cpf\": \"{{cpf}}\",\n  \"telefone\": \"41999998888\",\n  \"email\": \"maria@email.com\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Cadastrar veículo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/veiculos",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"marca\": \"Fiat\",\n  \"modelo\": \"Argo\",\n  \"ano\": 2022,\n  \"cor\": \"Prata\",\n  \"placa\": \"{{placa}}\",\n  \"cpfProprietario\": \"{{cpf}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Cadastrar serviço (catálogo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/servicos",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Troca de pastilhas\",\n  \"preco\": 150.0,\n  \"tempoEstimadoMinutos\": 60\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('servicoId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cadastrar insumo (estoque)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/insumos",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nome\": \"Pastilha de freio\",\n  \"tipo\": \"PECA\",\n  \"preco\": 80.0,\n  \"quantidadeEstoque\": 10\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('insumoId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Repor estoque",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/insumos/{{insumoId}}/reposicao",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantidade\": 5\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Saga — fluxo da OS",
+      "item": [
+        {
+          "name": "Abrir OS (inicia a Saga)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/ordens-servico",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cpfCliente\": \"{{cpf}}\",\n  \"placaVeiculo\": \"{{placa}}\",\n  \"sintomaRelatado\": \"Barulho ao frear\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('osId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fila da oficina",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/fila"
+          }
+        },
+        {
+          "name": "Iniciar diagnóstico",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/{{osId}}/diagnostico/iniciar"
+          }
+        },
+        {
+          "name": "Incluir serviço no diagnóstico",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/{{osId}}/diagnostico/itens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tipo\": \"SERVICO\",\n  \"referenciaId\": \"{{servicoId}}\",\n  \"quantidade\": 1\n}"
+            }
+          }
+        },
+        {
+          "name": "Incluir insumo no diagnóstico",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/{{osId}}/diagnostico/itens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tipo\": \"INSUMO\",\n  \"referenciaId\": \"{{insumoId}}\",\n  \"quantidade\": 2\n}"
+            }
+          }
+        },
+        {
+          "name": "Concluir diagnóstico",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/{{osId}}/diagnostico/concluir"
+          }
+        },
+        {
+          "name": "Consultar orçamento da OS",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{billing_url}}/orcamentos/os/{{osId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('orcamentoId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Aprovar orçamento (cria cobrança Mercado Pago)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{billing_url}}/orcamentos/{{orcamentoId}}/aprovar"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('pagamentoId', pm.response.json().id);",
+                  "console.log('Link de pagamento:', pm.response.json().linkPagamento);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[modo fake] Simular pagamento aprovado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{billing_url}}/pagamentos/{{pagamentoId}}/simular?resultado=APROVADO",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Iniciar reparo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/{{osId}}/reparo/iniciar"
+          }
+        },
+        {
+          "name": "Finalizar reparo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/{{osId}}/reparo/finalizar"
+          }
+        },
+        {
+          "name": "Registrar entrega",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/ordens-servico/{{osId}}/entrega"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Acompanhamento",
+      "item": [
+        {
+          "name": "Status da OS",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/ordens-servico/{{osId}}"
+          }
+        },
+        {
+          "name": "Histórico da OS",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/ordens-servico/{{osId}}/historico"
+          }
+        },
+        {
+          "name": "Rastreamento da Saga",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/ordens-servico/{{osId}}/saga"
+          }
+        },
+        {
+          "name": "OS em andamento",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/ordens-servico"
+          }
+        },
+        {
+          "name": "Pagamentos do orçamento",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{billing_url}}/orcamentos/{{orcamentoId}}/pagamentos"
+          }
+        },
+        {
+          "name": "Execução da OS",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{execution_url}}/execucoes/{{osId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Falhas e compensações",
+      "item": [
+        {
+          "name": "Rejeitar orçamento",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{billing_url}}/orcamentos/{{orcamentoId}}/rejeitar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"motivo\": \"Valor acima do esperado\"\n}"
+            }
+          }
+        },
+        {
+          "name": "[modo fake] Simular pagamento recusado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{billing_url}}/pagamentos/{{pagamentoId}}/simular?resultado=RECUSADO",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Cancelar OS",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{os_url}}/ordens-servico/{{osId}}/cancelar",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"motivo\": \"Cliente desistiu\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook Mercado Pago (exemplo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{billing_url}}/webhooks/mercadopago?type=payment&data.id=123456",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"payment\",\n  \"data\": {\n    \"id\": \"123456\"\n  }\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

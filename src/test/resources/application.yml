@@ -1,0 +1,37 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:os_db;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  rabbitmq:
+    listener:
+      simple:
+        auto-startup: false
+  mail:
+    host: localhost
+    port: 1025
+
+jwt:
+  secret: chave-de-teste-com-pelo-menos-32-caracteres-ok
+  expiration: 3600000
+
+admin:
+  username: admin
+  password: senha-teste
+
+saga:
+  verificacao-prazos-ms: 3600000
+
+outbox:
+  relay:
+    intervalo-ms: 3600000
+
+management:
+  health:
+    mail:
+      enabled: false
+    rabbit:
+      enabled: false

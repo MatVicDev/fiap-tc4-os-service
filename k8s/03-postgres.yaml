@@ -1,0 +1,73 @@
+# Banco PRÓPRIO do os-service (database-per-service): nenhum outro microsserviço
+# tem credenciais ou rota para ele. StatefulSet + PVC (EBS gp3 no EKS).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: os-postgres
+  namespace: oficina
+spec:
+  serviceName: os-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: os-postgres
+  template:
+    metadata:
+      labels:
+        app: os-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: os_db
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: os-service-secret
+                  key: SPRING_DATASOURCE_USERNAME
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: os-service-secret
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d os_db"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: os-postgres
+  namespace: oficina
+spec:
+  selector:
+    app: os-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

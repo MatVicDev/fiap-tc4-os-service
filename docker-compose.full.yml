@@ -1,0 +1,84 @@
+# Ambiente completo para desenvolvimento/demonstração: os três microsserviços (cada um
+# com seu banco), RabbitMQ e MailHog. Espera os repositórios como pastas irmãs:
+#   ../fiap-tc4-billing-service  e  ../fiap-tc4-execution-service
+# Uso: docker compose -f docker-compose.full.yml up --build -d && ./scripts/e2e-saga.sh
+x-jwt: &jwt
+  JWT_SECRET: ${JWT_SECRET:-chave-local-compartilhada-com-pelo-menos-32-caracteres}
+x-rabbit: &rabbit
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_USERNAME: oficina
+  RABBITMQ_PASSWORD: oficina
+  DD_TRACE_ENABLED: "false"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: oficina
+      RABBITMQ_DEFAULT_PASS: oficina
+    ports: ["5672:5672", "15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 12
+
+  mailhog:
+    image: mailhog/mailhog
+    ports: ["8025:8025"]
+
+  os-postgres:
+    image: postgres:16
+    environment: { POSTGRES_DB: os_db, POSTGRES_USER: os_user, POSTGRES_PASSWORD: os_password }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U os_user -d os_db"], interval: 5s, retries: 12 }
+
+  billing-postgres:
+    image: postgres:16
+    environment: { POSTGRES_DB: billing_db, POSTGRES_USER: billing_user, POSTGRES_PASSWORD: billing_password }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U billing_user -d billing_db"], interval: 5s, retries: 12 }
+
+  execution-mongo:
+    image: mongo:7
+    environment: { MONGO_INITDB_ROOT_USERNAME: execution_user, MONGO_INITDB_ROOT_PASSWORD: execution_password }
+    healthcheck: { test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"], interval: 5s, retries: 12 }
+
+  os-service:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      <<: [*jwt, *rabbit]
+      SPRING_DATASOURCE_URL: jdbc:postgresql://os-postgres:5432/os_db
+      SPRING_DATASOURCE_USERNAME: os_user
+      SPRING_DATASOURCE_PASSWORD: os_password
+      SPRING_MAIL_HOST: mailhog
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+    depends_on:
+      os-postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  billing-service:
+    build: ../fiap-tc4-billing-service
+    ports: ["8081:8080"]
+    environment:
+      <<: [*jwt, *rabbit]
+      SPRING_DATASOURCE_URL: jdbc:postgresql://billing-postgres:5432/billing_db
+      SPRING_DATASOURCE_USERNAME: billing_user
+      SPRING_DATASOURCE_PASSWORD: billing_password
+      MERCADOPAGO_MODO: ${MERCADOPAGO_MODO:-fake}
+      MERCADOPAGO_ACCESS_TOKEN: ${MERCADOPAGO_ACCESS_TOKEN:-}
+      MERCADOPAGO_WEBHOOK_SECRET: ${MERCADOPAGO_WEBHOOK_SECRET:-}
+      MERCADOPAGO_NOTIFICATION_URL: ${MERCADOPAGO_NOTIFICATION_URL:-}
+      BILLING_URL_PUBLICA: ${BILLING_URL_PUBLICA:-http://localhost:8081}
+    depends_on:
+      billing-postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  execution-service:
+    build: ../fiap-tc4-execution-service
+    ports: ["8082:8080"]
+    environment:
+      <<: [*jwt, *rabbit]
+      MONGODB_URI: mongodb://execution_user:execution_password@execution-mongo:27017/execution_db?authSource=admin
+    depends_on:
+      execution-mongo: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }

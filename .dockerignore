@@ -1,0 +1,10 @@
+target/
+.git/
+.idea/
+.vscode/
+*.md
+*.pdf
+*.txt
+.env
+**/application.properties
+**/application.properties.example

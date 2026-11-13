@@ -1,0 +1,249 @@
+name: CI/CD os-service
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  SERVICE: os-service
+  JAVA_VERSION: "21"
+
+jobs:
+  # 1) Build + testes unitários + BDD (Cucumber) + gate de cobertura JaCoCo (>= 80%)
+  build-test:
+    name: Build e testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Testes unitários, BDD e cobertura
+        run: ./mvnw -B verify
+
+      - name: Resumo da cobertura
+        if: always()
+        run: |
+          if [ -f target/site/jacoco/jacoco.csv ]; then
+            awk -F, 'NR>1 {m+=$8; c+=$9} END {printf "### Cobertura de linhas (JaCoCo): %.1f%%\n", 100*c/(m+c)}' \
+              target/site/jacoco/jacoco.csv >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar relatórios (cobertura e BDD)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorios-testes
+          path: |
+            target/site/jacoco/
+            target/cucumber-report.html
+            target/surefire-reports/
+
+  # 2) Qualidade de código: SonarQube. Sem SONAR_TOKEN, sobe um SonarQube Community
+  #    efêmero como service container e aplica o quality gate; com SONAR_TOKEN, usa o
+  #    servidor indicado em vars.SONAR_HOST_URL (ex.: SonarCloud).
+  quality:
+    name: Qualidade (SonarQube)
+    runs-on: ubuntu-latest
+    needs: build-test
+    services:
+      sonarqube:
+        image: sonarqube:community
+        env:
+          SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+        ports:
+          - 9000:9000
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Preparar servidor SonarQube
+        id: sonar
+        env:
+          SONAR_TOKEN_EXTERNO: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_EXTERNO: ${{ vars.SONAR_HOST_URL }}
+        run: |
+          if [ -n "$SONAR_TOKEN_EXTERNO" ] && [ -n "$SONAR_HOST_EXTERNO" ]; then
+            echo "host=$SONAR_HOST_EXTERNO" >> "$GITHUB_OUTPUT"
+            echo "::add-mask::$SONAR_TOKEN_EXTERNO"
+            echo "token=$SONAR_TOKEN_EXTERNO" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Aguardando SonarQube efêmero..."
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s http://localhost:9000/api/system/status | jq -r '.status' || true)
+            [ "$STATUS" = "UP" ] && break
+            sleep 5
+          done
+          [ "$STATUS" = "UP" ] || { echo "SonarQube não subiu"; exit 1; }
+          NOVA_SENHA='Ci-Sonar-${{ github.run_id }}!Aa1'
+          curl -sf -u admin:admin -X POST "http://localhost:9000/api/users/change_password" \
+            --data-urlencode "login=admin" --data-urlencode "previousPassword=admin" \
+            --data-urlencode "password=$NOVA_SENHA"
+          TOKEN=$(curl -sf -u "admin:$NOVA_SENHA" -X POST "http://localhost:9000/api/user_tokens/generate" \
+            --data-urlencode "name=ci-${{ github.run_id }}" | jq -r '.token')
+          echo "::add-mask::$TOKEN"
+          echo "host=http://localhost:9000" >> "$GITHUB_OUTPUT"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Análise estática + quality gate
+        run: |
+          ./mvnw -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.host.url=${{ steps.sonar.outputs.host }} \
+            -Dsonar.token=${{ steps.sonar.outputs.token }} \
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY || env.SERVICE }} \
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }} \
+            -Dsonar.qualitygate.wait=true
+
+  # 3) Imagem Docker (push para o GHCR apenas na main)
+  docker:
+    name: Imagem Docker
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Nome da imagem
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/${SERVICE}" >> "$GITHUB_ENV"
+
+      - name: Login no GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+  # 4) Deploy automatizado em Kubernetes efêmero (kind) + smoke test — roda em todo
+  #    PR e push, validando manifestos, imagem e integração com Postgres/RabbitMQ.
+  deploy-kind:
+    name: Deploy Kubernetes (kind) + smoke test
+    runs-on: ubuntu-latest
+    needs: [build-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build da imagem
+        run: docker build -t ${SERVICE}:latest .
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: oficina
+
+      - name: Carregar imagem no cluster
+        run: kind load docker-image ${SERVICE}:latest --name oficina
+
+      - name: Aplicar manifestos
+        run: |
+          kubectl apply -f k8s/ci/rabbitmq.yaml
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/
+          kubectl -n mensageria rollout status deployment/rabbitmq --timeout=180s
+          kubectl -n oficina rollout status statefulset/os-postgres --timeout=180s
+          kubectl -n oficina rollout status deployment/${SERVICE} --timeout=300s
+
+      - name: Smoke test
+        run: |
+          kubectl -n oficina port-forward svc/${SERVICE} 8080:8080 &
+          sleep 5
+          curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://localhost:8080/actuator/health/readiness
+          TOKEN=$(curl -fsS -X POST http://localhost:8080/auth/login -H "Content-Type: application/json" \
+            -d '{"usuario":"admin","senha":"troque-esta-senha-antes-de-usar-em-producao"}')
+          curl -fsS http://localhost:8080/ordens-servico -H "Authorization: Bearer $TOKEN"
+          echo "Smoke test OK"
+
+      - name: Diagnóstico em caso de falha
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n oficina describe deployment/${SERVICE} || true
+          kubectl -n oficina logs deployment/${SERVICE} --tail=200 || true
+
+  # 5) Deploy no EKS (AWS Academy Learner Lab). O Learner Lab não permite OIDC/IAM
+  #    roles para o GitHub, então usa as credenciais temporárias da sessão do lab
+  #    (AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN), atualizadas a cada sessão.
+  deploy-eks:
+    name: Deploy EKS
+    runs-on: ubuntu-latest
+    needs: [quality, docker, deploy-kind]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_TO_AWS == 'true'
+    environment: producao
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login no ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build e push para o ECR
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/fiap-tc4/${SERVICE}:${{ github.sha }}"
+          aws ecr describe-repositories --repository-names "fiap-tc4/${SERVICE}" >/dev/null 2>&1 \
+            || aws ecr create-repository --repository-name "fiap-tc4/${SERVICE}" >/dev/null
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Aplicar manifestos e segredos
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
+        run: |
+          aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
+          kubectl apply -f k8s/00-namespace.yaml
+          # Secret real ANTES dos demais manifestos (e sem aplicar o placeholder de
+          # 02-secret.yaml): o Postgres só lê a senha na primeira inicialização do volume.
+          kubectl -n oficina create secret generic os-service-secret \
+            --from-literal=SPRING_DATASOURCE_USERNAME=os_user \
+            --from-literal=SPRING_DATASOURCE_PASSWORD="$DB_PASSWORD" \
+            --from-literal=RABBITMQ_USERNAME=oficina \
+            --from-literal=RABBITMQ_PASSWORD="$RABBITMQ_PASSWORD" \
+            --from-literal=JWT_SECRET="$JWT_SECRET" \
+            --from-literal=ADMIN_USERNAME=admin \
+            --from-literal=ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          for f in k8s/*.yaml; do
+            [ "$(basename "$f")" = "02-secret.yaml" ] || kubectl apply -f "$f"
+          done
+
+      - name: Rollout da nova imagem
+        run: |
+          kubectl -n oficina set image deployment/${SERVICE} ${SERVICE}=$IMAGE
+          kubectl -n oficina rollout status deployment/${SERVICE} --timeout=300s

@@ -1,0 +1,52 @@
+# RabbitMQ mínimo usado SOMENTE no smoke test do CI (cluster kind efêmero).
+# Em EKS o broker é provisionado por fiap-tc3-infra-k8s no namespace "mensageria".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mensageria
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: mensageria
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: oficina
+            - name: RABBITMQ_DEFAULT_PASS
+              value: oficina
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: mensageria
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+    - name: management
+      port: 15672
